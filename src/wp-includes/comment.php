@@ -987,23 +987,67 @@ function get_page_of_comment( $comment_ID, $args = array() ) {
 	if ( $args['max_depth'] > 1 && 0 != $comment->comment_parent )
 		return get_page_of_comment( $comment->comment_parent, $args );
 
-	$allowedtypes = array(
-		'comment' => '',
-		'pingback' => 'pingback',
-		'trackback' => 'trackback',
-	);
+	switch ( $args['type'] ) {
+		case 'comment':
+			$comment_type       = 'comment';
+ 	        $comment_type_where = " AND comment_type = ''";
+ 	        break;
+		case 'pingback':
+			$comment_type       = 'pingback';
+			$comment_type_where = " AND comment_type = 'pingback'";
+			break;
+		case 'trackback':
+			$comment_type       = 'trackback';
+			$comment_type_where = " AND comment_type = 'trackback'";
+			break;
+		case 'pings':
+			$comment_type       = 'pings';
+			$comment_type_where = " AND ( comment_type = 'pingback' OR comment_type = 'trackback' )";
+			break;
+		default:
+			$comment_type = 'all';
+			$comment_type_where = '';
+	}
 
-	$comtypewhere = ( 'all' != $args['type'] && isset($allowedtypes[$args['type']]) ) ? " AND comment_type = '" . $allowedtypes[$args['type']] . "'" : '';
+	$cache_key = 'post-' . $comment->comment_post_ID;
+	// Check the cache and set it up if it's not set (so we can use replace later on)
+	if ( false === $older_comments_cache = wp_cache_get( $cache_key, 'comment_pages' ) ) {
+		$older_comments_cache = array();
+		wp_cache_add( $cache_key, $older_comments_cache, 'comment_pages' );
+	}
+	$older_comments_cache = (array) $older_comments_cache;
 
-	// Count comments older than this one
-	$oldercoms = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(comment_ID) FROM $wpdb->comments WHERE comment_post_ID = %d AND comment_parent = 0 AND comment_approved = '1' AND comment_date_gmt < '%s'" . $comtypewhere, $comment->comment_post_ID, $comment->comment_date_gmt ) );
+	// Get comments older than this comment
+	$older_comments = ( isset( $older_comments_cache[ $comment_type ] ) && isset( $older_comments_cache[ $comment_type ][ $comment->comment_ID ] ) ) ? $older_comments_cache[ $comment_type ][ $comment->comment_ID ] : false;
+	if ( false === $older_comments ) {
+		$older_comments = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(comment_ID) FROM $wpdb->comments WHERE comment_post_ID = %d AND comment_parent = 0 AND comment_approved = '1' AND comment_date_gmt < '%s'" . $comment_type_where, $comment->comment_post_ID, $comment->comment_date_gmt ) );
+
+		$older_comments_cache[ $comment_type ][ $comment->comment_ID ] = $older_comments;
+		wp_cache_replace( $cache_key, $older_comments_cache, 'comment_pages' );
+	}
 
 	// No older comments? Then it's page #1.
-	if ( 0 == $oldercoms )
+	if ( 0 == $older_comments )
 		return 1;
 
 	// Divide comments older than this one by comments per page to get this comment's page number
-	return ceil( ( $oldercoms + 1 ) / $args['per_page'] );
+	return ceil( ( $older_comments + 1 ) / $args['per_page'] );
+}
+
+/**
+ * Clears the cache used by get_page_of_comment(). Is designed to be attached to the
+ * 'clear_page_of_comment_cache' action inside of wp_transition_comment_status();
+ *
+ * @since 3.7.0
+ * @uses wp_cache_delete() Does the cache deleting.
+ *
+ * @param string $new_status Unused
+ * @param string $old_status Unused
+ * @param object $comment Comment object that had it's status changed
+ * @return bool True on successful removal, false on failure
+ */
+function clear_page_of_comment_cache( $new_status, $old_status, $comment ) {
+	return wp_cache_delete( 'post-' . $comment->comment_post_ID, 'comment_pages' );
 }
 
 /**
